@@ -1,14 +1,20 @@
 module SQL
+using Serialization  # for file-backed datastores.
 
-# julia function-style api.
-export create_table, insert_into_values, select_from, select_from__group_by
 # SQL query-style API
 export @SQL, @CREATE, @INSERT, @SELECT
+# julia function-style api.
+export create_table, insert_into_values, select_from, select_from__group_by
+# Disk i/o
+export write_table_to_disk, read_table_from_disk
 
 struct Table
     title::String
     headers
     cols
+    #backing_file  # if not empty, this data is stored on disk in this file
+    #Table(title,headers,cols) = new(title,headers,cols, "")
+    #Table(title,headers,cols,backing_file) = new(title,headers,cols,backing_file)
 end
 """ users = create_table("users", (:id, Int64), (:name, String)) """
 create_table(title, key_pairs...) =
@@ -18,6 +24,21 @@ function create_table(title, key_pairs::Vector{Tuple{Symbol, DataType}})
     return Table(title, [k for (k,v) in key_pairs], cols)
 end
 
+function write_table_to_disk(table, filename)
+    if !isempty(filename)
+        io = open(filename, "w")
+        serialize(io, table)
+        close(io)
+    end
+end
+function read_table_from_disk(filename)
+    if !isempty(filename)
+        io = open(filename, "r")
+        t = deserialize(io)
+        close(io)
+        return t
+    end
+end
 
 tostring(x) = join([x], "")  # String(::Expr) fails for reasons..
 function Base.show(io::IO, t::Table)
@@ -68,7 +89,7 @@ matches(a::Val{:*}, b::Val{A}) where {A} = true
 # For a single symbol, just find the matching column name.
 function _select_from_internal(t, col::Symbol)
     indices = Tuple(Iterators.flatten(findall(s -> matches(Val(s), Val(col)), t.headers)))
-    length(indices) >= 1 || return Table("RESULTS", Tuple(()), Tuple(()))
+    length(indices) >= 1 || error("Column $col does not exist.")
     Table("RESULTS", Tuple(t.headers[i] for i in indices), Tuple(t.cols[i] for i in indices))
 end
 _select_from_internal(t, c::String) = _select_from_internal(t, Symbol(c))

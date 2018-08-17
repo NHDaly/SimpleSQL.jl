@@ -105,3 +105,14 @@ t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
 #    print(io, str)
 #    Base.print_array(stdout, t.cols)
 #end
+
+
+# Disk I/O
+f = joinpath(tempdir(), "groceries")
+write_table_to_disk(groceries, f)
+groceries2 = read_table_from_disk(f)
+
+@SQL begin
+    @SELECT sum(quantity), aisle
+    @FROM groceries2 @GROUP @BY aisle
+end
