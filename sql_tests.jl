@@ -60,6 +60,10 @@ select_from__group_by(groceries, :aisle, :name)
 select_from__group_by(groceries, :aisle, :aisle, :(sum(quantity)))
 select_from__group_by(groceries, :aisle, :(identity(aisle)))  # 😮
 
+# TODO: need to figure out a better API to squish together all the select_ functions.
+select_from__where(groceries, :(aisle .== 2), :(sum(quantity)))
+select_from__where(groceries, :(aisle .> 2), :aisle)
+
 # MACRO SQL SYNTAX
 @CREATE @TABLE favorite_books ((:id, Int), ("name", String), (:rating, Real))
 @INSERT @INTO favorite_books @VALUES (1, "Eragon", 3.5)

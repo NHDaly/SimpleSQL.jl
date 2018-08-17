@@ -4,7 +4,7 @@ using Serialization  # for file-backed datastores.
 # SQL query-style API
 export @SQL, @CREATE, @INSERT, @SELECT
 # julia function-style api.
-export create_table, insert_into_values, select_from, select_from__group_by
+export create_table, insert_into_values, select_from, select_from__group_by, select_from__where
 # Disk i/o
 export write_table_to_disk, read_table_from_disk
 
@@ -241,6 +241,36 @@ function _select_from__group_by_internal(t, colexpr::ColumnExprRef, colors, coun
         push!(results, row_results)
     end
     return results, out_colnames
+end
+
+function select_from__where(t, whereexpr::Expr, colexprs...)
+    wherecolexpr = _retrieve_col_name(whereexpr)
+    val_table = select_from(t, wherecolexpr.name)
+    vals = val_table.cols
+    sym, expr = wherecolexpr.sym, wherecolexpr.expr
+    # Get bitarray for whereexpr row-filter.
+    rowfilter = _eval_expr_internal(vals, sym, expr)
+
+    # Now get the actual values for the colexprs
+    results = []
+    out_colnames = []
+    for colexpr in colexprs
+        col = _retrieve_col_name(colexpr)
+        val_table = select_from(t, col.name)
+        val = val_table.cols
+        # Now filter with where
+        filtered = map(c->getindex(c, rowfilter.cols[1]), val)
+        # Then finally eval the expressions
+        if isa(col, ColumnExprRef)
+            sym = col.sym
+            t = _eval_expr_internal(filtered, sym, colexpr)
+        else
+            t = Table("", val_table.headers, filtered)
+        end
+        push!(results, t.cols...)
+        push!(out_colnames, t.headers...)
+    end
+    return Table("RESULTS", out_colnames, results)
 end
 
 # ----------------------- Now start the SQL interpreter part --------------
