@@ -1,14 +1,23 @@
+module SQL
+
+# julia function-style api.
+export create_table, insert_into_values, select_from, select_from__group_by
+# SQL query-style API
+export @SQL, @CREATE, @INSERT, @SELECT
+
 struct Table
     title::String
     headers
     cols
 end
+""" users = create_table("users", (:id, Int64), (:name, String)) """
+create_table(title, key_pairs...) =
+    create_table(title, collect((Symbol(s),t) for (s,t) in key_pairs))
 function create_table(title, key_pairs::Vector{Tuple{Symbol, DataType}})
     cols = Tuple((Vector{T}() for (s,T) in key_pairs))
     return Table(title, [k for (k,v) in key_pairs], cols)
 end
-create_table(title, key_pairs...) =
-    create_table(title, collect((Symbol(s),t) for (s,t) in key_pairs))
+
 
 tostring(x) = join([x], "")  # String(::Expr) fails for reasons..
 function Base.show(io::IO, t::Table)
@@ -25,7 +34,7 @@ function Base.show(io::IO, t::Table)
     print(io, str)
 end
 
-
+""" insert_into_values(users, (1, "nathan")) """
 function insert_into_values(t, values)
     table = t.cols
     for i in 1:length(values)
@@ -33,31 +42,49 @@ function insert_into_values(t, values)
     end
 end
 
-matches(a::Val{S}, b::Val{S}) where S = true
-matches(a::Val{A}, b::Val{B}) where A where B = false
-matches(a::Val{A}, b::Val{:*}) where A = true
-matches(a::Val{:*}, b::Val{A}) where A = true
-function select_from(t, col::Symbol)
-    indices = Tuple(Iterators.flatten(findall(s -> matches(Val(s), Val(col)), t.headers)))
-    length(indices) >= 1 || return
-
-    Table("RESULTS", Tuple(t.headers[i] for i in indices), Tuple(t.cols[i] for i in indices))
-end
-select_from(t, c::S where S <:Union{String, Symbol}) = select_from(t, [Symbol(c)])
-select_from(t, columns::Tuple) = select_from(t, columns...)
-select_from(t, columns::Vector) = select_from(t, columns...)
+# The main `SELECT` function. This is the interface, and all specializations for
+# different types happen via specializations of _select_from_internal.
+"""
+    select_from(users, :id, :(uppercase.(name)))
+ Perform a SELECT query on t. Queries can be column names or expressions.
+ """
 function select_from(t, columns...)
     out_names, out_cols = [], []
     for c in columns
-        r = select_from(t, c)
+        r = _select_from_internal(t, c)
         push!(out_names, r.headers)
         push!(out_cols, r.cols)
     end
     Table("RESULTS", Tuple(Iterators.flatten(out_names)), Tuple(Iterators.flatten(out_cols)))
 end
+select_from(t, columns::Tuple) = select_from(t, columns...)
+select_from(t, columns::Vector) = select_from(t, columns...)
 
-""" Convert :(sum(id)) to :id, :(sum(<placeholder>)) so that the column can be
-  retrieved and its value inserted into the expr. """
+# Use compiler dispatch to compare column names w/ :*
+matches(a::Val{S}, b::Val{S}) where {S} = true
+matches(a::Val{A}, b::Val{B}) where {A, B} = false
+matches(a::Val{A}, b::Val{:*}) where {A} = true
+matches(a::Val{:*}, b::Val{A}) where {A} = true
+# For a single symbol, just find the matching column name.
+function _select_from_internal(t, col::Symbol)
+    indices = Tuple(Iterators.flatten(findall(s -> matches(Val(s), Val(col)), t.headers)))
+    length(indices) >= 1 || return Table("RESULTS", Tuple(()), Tuple(()))
+    Table("RESULTS", Tuple(t.headers[i] for i in indices), Tuple(t.cols[i] for i in indices))
+end
+_select_from_internal(t, c::String) = _select_from_internal(t, Symbol(c))
+_select_from_internal(t, expr::QuoteNode) = _select_from_internal(t, expr.value)
+
+# For expressions, we evaluate the expression with the column name replaced with
+# its value. This requires digging into the expression to find the column name,
+# retrieving the column(s), and then evaluating the expr with the column(s) value(s).
+function _select_from_internal(t, expr::Expr)
+    col, sym = expr_to_col(expr)
+    val_table = select_from(t, col)
+    val = val_table.cols
+    return _eval_expr_internal(val,sym, expr)
+end
+# Convert :(sum(id)) to :id, :(sum(<placeholder>)) so that the column can be
+#  retrieved and its value inserted into the expr.
 function expr_to_cols(expressions::Vector{Expr})
     cols, syms = Vector{Symbol}(), Vector{Base.RefArray}()
     for expr in expressions
@@ -77,35 +104,46 @@ function expr_to_col(expr::Expr)
     end
     return column, ref
 end
-
-function select_from(t, exprs::Vector{Expr})
-    columns, syms = expr_to_cols(exprs)
-    outcol_names = []
-    results = []
-    for i in 1:length(exprs)
-        col, sym, expr = columns[i], syms[i], exprs[i]
-        push!(outcol_names, join([expr], ""))  # Lol "can't" convert Uxpr to String
-        val_table = select_from(t, col)
-        val = val_table.cols
-        global ____select_from_col = val
-        #println("____select_from_col: $____select_from_col")
-        global ____select_from_col = permutedims(reshape(collect(Iterators.flatten(____select_from_col)), length(____select_from_col),:))
-        # now do the `expr` over col
-        #sym[] = Expr(:(...), ____select_from_col)
-        sym[] = ____select_from_col
-        # push!(results, eval(:(@. $expr)))  # This would allow SUM("*") to sum all cols, but that's not what it's supposed to do.
-        #println(expr)
-        r = eval(expr)
-        # Now turn the 3x1 Arrays back into a 3-el Vector
-        if length(size(r)) == 2 && size(r)[end] == 1
-            r = reshape(r, size(r)[1])
-        end
-        push!(results, r)
+function _eval_expr_internal(val,sym, expr::Expr)
+    out_colname = tostring(expr)  # Before mutating expr.
+    global ____select_from_col = permutedims(reshape(collect(Iterators.flatten(val)), length(val),:))
+    sym[] = ____select_from_col
+    r = eval(expr)
+    # Now turn the 3x1 Arrays back into a 3-el Vector
+    if length(size(r)) == 2 && size(r)[end] == 1
+        r = reshape(r, size(r)[1])
     end
-    Table("RESULTS", outcol_names, results)
+    Table("RESULTS", [out_colname], [r])
 end
-select_from(t, exprs::Expr...) = select_from(t, [exprs...])
 
+""" select_from__group_by(t, groupby, colexprs...)
+
+ Perform a SELECT query of `colexprs`, GROUP BY `groupby`.
+ """
+function select_from__group_by(t, groupby::Symbol, colexprs...)
+    grouped_table = select_from(t, groupby)
+    grouping_vals = grouped_table.cols
+    @assert length(grouping_vals) == 1
+    colors, counts = color_unique_vals(grouping_vals[1])
+    num_colors = maximum(colors)
+
+    results = []
+    out_colnames = []
+    for i in 1:length(colexprs)
+        col = _retrieve_col_name(colexprs[i])
+        inner_results, inner_colnames = _select_from__group_by_internal(t, col, colors, counts, num_colors)
+        push!(results, inner_results...)
+        push!(out_colnames, inner_colnames...)
+    end
+    Table("RESULTS", Tuple(out_colnames), Tuple(results))
+end
+select_from__group_by(t, groupby::Symbol, colexprs::Tuple) =
+    select_from__group_by(t, groupby, colexprs...)
+select_from__group_by(t, groupby::Symbol, colexprs::Array) =
+    select_from__group_by(t, groupby, colexprs...)
+
+# Rename each unique item to a unique number, and get counts.
+# Eg: convert (5,7,7,2,7) -> (1,2,2,3,2) and [1,3,1]
 function color_unique_vals(col::Array{T,1}) where T
     seen = Dict{T, Int64}()
     cur = 1
@@ -123,6 +161,7 @@ function color_unique_vals(col::Array{T,1}) where T
     out, counts
 end
 
+# Types for dispatching to handle column version expression.
 struct Column
     name::Symbol
 end
@@ -131,7 +170,6 @@ struct ColumnExprRef
     sym
     expr::Expr
 end
-
 _retrieve_col_name(col::Symbol) = Column(col)
 function _retrieve_col_name(expr::Expr)
     ColumnExprRef(expr_to_col(expr)..., expr)
@@ -139,28 +177,6 @@ end
 _retrieve_col_names(colexprs...) =
     [_retrieve_col_name(col) for col in colexprs]
 
-select_from__group_by(t, groupby::Symbol, colexprs::Tuple) =
-    select_from__group_by(t, groupby, colexprs...)
-select_from__group_by(t, groupby::Symbol, colexprs::Array) =
-    select_from__group_by(t, groupby, colexprs...)
-function select_from__group_by(t, groupby::Symbol, colexprs...)
-    grouped_table = select_from(t, groupby)
-    grouping_vals = grouped_table.cols
-    @assert length(grouping_vals) == 1
-    colors, counts = color_unique_vals(grouping_vals[1])
-    #println(colors)
-    num_colors = maximum(colors)
-
-    results = []
-    out_colnames = []
-    for i in 1:length(colexprs)
-        col = _retrieve_col_name(colexprs[i])
-        inner_results, inner_colnames = _select_from__group_by_internal(t, col, colors, counts, num_colors)
-        push!(results, inner_results...)
-        push!(out_colnames, inner_colnames...)
-    end
-    Table("RESULTS", Tuple(out_colnames), Tuple(results))
-end
 function _select_from__group_by_internal(t, colexpr::Column, colors, counts, num_colors)
     col = colexpr.name
     vals_table = select_from(t, col)
@@ -198,29 +214,15 @@ function _select_from__group_by_internal(t, colexpr::ColumnExprRef, colors, coun
 
         row_results = []
         for val in splits
-
-            global ____select_from_col = val
-            #println("____select_from_col: $____select_from_col")
-            global ____select_from_col = permutedims(reshape(collect(Iterators.flatten(____select_from_col)), length(____select_from_col),:))
-            # now do the `expr` over col
-            #sym[] = Expr(:(...), ____select_from_col)
-            sym[] = ____select_from_col
-            # push!(results, eval(:(@. $expr)))  # This would allow SUM("*") to sum all cols, but that's not what it's supposed to do.
-            #println(expr)
-            r = eval(expr)
-            # Now turn the 3x1 Arrays back into a 3-el Vector
-            if length(size(r)) == 2 && size(r)[end] == 1
-                r = reshape(r, size(r)[1])
-            end
-
-            push!(row_results, r)
+            out_t = _eval_expr_internal(val, sym, expr)
+            push!(row_results, out_t.cols...)
         end
         push!(results, row_results)
     end
     return results, out_colnames
 end
 
-# ----------------------- Now start the interpreter part --------------
+# ----------------------- Now start the SQL interpreter part --------------
 
 macro CREATE(expr)
     @assert(expr.head == :macrocall)
@@ -229,9 +231,10 @@ macro CREATE(expr)
     table = expr.args[3]
     name = String(table)
     colpairs = eval(expr.args[4])
-    quote
-        global $table = create_table($name, $(colpairs...))
-    end
+    # Escape expr so table name doesn't become a weird macro-local variable.
+    esc(quote
+        $table = create_table($name, $(colpairs...))
+    end)
 end
 
 macro INSERT(expr)
@@ -243,7 +246,7 @@ macro INSERT(expr)
     @assert(values.args[1] == Symbol("@VALUES"))
     vals = eval(values.args[3])
     quote
-        insert_into_values($table, $vals)
+        insert_into_values($(esc(table)), $vals)
     end
 end
 
@@ -269,17 +272,17 @@ function macro_select(colexpr, fromexpr::Expr)
     colexpr = quote_column_syms(colexpr)
     @assert(fromexpr.args[1] == Symbol("@FROM"))
     if length(fromexpr.args) < 4
-        return quote
+        return esc(quote
             select_from($(fromexpr.args[3]), $colexpr)
-        end
+        end)
     end
     extraexpr = fromexpr.args[4]
     @assert isa(extraexpr, Expr)
     if extraexpr.args[1] == Symbol("@GROUP") && extraexpr.args[3].args[1] == Symbol("@BY")
         groupcolexpr = quote_column_syms(extraexpr.args[3].args[3])
-        return quote
+        return esc(quote
             select_from__group_by($(fromexpr.args[3]), $groupcolexpr, $colexpr)
-        end
+        end)
     end
 end
 macro SELECT(colexpr, fromexpr::Expr)
@@ -305,5 +308,7 @@ macro SQL(expr)
         deleteat!(expr.args, (3,4))
     end
     # Return the @SELECT expression.
-    expr.args[2]
+    esc(expr.args[2])
+end
+
 end
