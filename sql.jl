@@ -4,7 +4,7 @@ using Serialization  # for file-backed datastores.
 # SQL query-style API
 export @SQL, @CREATE, @INSERT, @SELECT
 # julia function-style api.
-export create_table, insert_into_values, select_from, select_from__group_by, select_from__where
+export create_table, insert_into_values, select_from
 # Disk i/o
 export write_table_to_disk, read_table_from_disk
 
@@ -66,10 +66,10 @@ end
 # The main `SELECT` function. This is the interface, and all specializations for
 # different types happen via specializations of _select_from_internal.
 """
-    select_from(users, :id, :(uppercase.(name)))
+    _select_from(users, :id, :(uppercase.(name)))
  Perform a SELECT query on t. Queries can be column names or expressions.
  """
-function select_from(t, columns...)
+function _select_from(t, columns...)
     out_names, out_cols = [], []
     for c in columns
         r = _select_from_internal(t, c)
@@ -78,8 +78,8 @@ function select_from(t, columns...)
     end
     Table("RESULTS", Tuple(Iterators.flatten(out_names)), Tuple(Iterators.flatten(out_cols)))
 end
-select_from(t, columns::Tuple) = select_from(t, columns...)
-select_from(t, columns::Vector) = select_from(t, columns...)
+_select_from(t, columns::Tuple) = _select_from(t, columns...)
+_select_from(t, columns::Vector) = _select_from(t, columns...)
 
 # Use compiler dispatch to compare column names w/ :*
 matches(a::Val{S}, b::Val{S}) where {S} = true
@@ -100,7 +100,7 @@ _select_from_internal(t, expr::QuoteNode) = _select_from_internal(t, expr.value)
 # retrieving the column(s), and then evaluating the expr with the column(s) value(s).
 function _select_from_internal(t, expr::Expr)
     col, sym = expr_to_col(expr)
-    val_table = select_from(t, col)
+    val_table = _select_from(t, col)
     val = val_table.cols
     return _eval_expr_internal(val,sym, expr)
 end
@@ -137,31 +137,59 @@ function _eval_expr_internal(val,sym, expr::Expr)
     Table("RESULTS", [out_colname], [r])
 end
 
-""" select_from__group_by(t, groupby, colexprs...)
+select_from(t, columns::Tuple; where=nothing, groupby=nothing) = select_from(t, columns...; where=where, groupby=groupby)
+select_from(t, columns::Vector; where=nothing, groupby=nothing) = select_from(t, columns...; where=where, groupby=groupby)
+function select_from(t, colexprs...; where=nothing, groupby=nothing)
+    if where == nothing && groupby == nothing
+        return _select_from(t, colexprs...)
+    end
 
- Perform a SELECT query of `colexprs`, GROUP BY `groupby`.
- """
-function select_from__group_by(t, groupby::Symbol, colexprs...)
-    grouped_table = select_from(t, groupby)
-    grouping_vals = grouped_table.cols
-    @assert length(grouping_vals) == 1
-    colors, counts = color_unique_vals(grouping_vals[1])
-    num_colors = maximum(colors)
+    if where != nothing
+        wherecolexpr = _retrieve_col_name(where)
+        val_table = _select_from(t, wherecolexpr.name)
+        vals = val_table.cols
+        sym, expr = wherecolexpr.sym, wherecolexpr.expr
+        # Get bitarray for whereexpr row-filter.
+        rowfilter = _eval_expr_internal(vals, sym, expr)
+    end
+    if groupby != nothing
+        grouped_table = _select_from(t, groupby)
+        grouping_vals = grouped_table.cols
+        @assert length(grouping_vals) == 1
+        colors, counts = color_unique_vals(grouping_vals[1])
+        num_colors = maximum(colors)
+    end
 
+    # Now get the actual values for the colexprs
     results = []
     out_colnames = []
-    for i in 1:length(colexprs)
-        col = _retrieve_col_name(colexprs[i])
-        inner_results, inner_colnames = _select_from__group_by_internal(t, col, colors, counts, num_colors)
+    for colexpr in colexprs
+        col = _retrieve_col_name(colexpr)
+        val_table = _select_from(t, col.name)
+        val = val_table.cols
+        # Now filter with where
+        if where != nothing
+            filtered = map(c->getindex(c, rowfilter.cols[1]), val)
+        else
+            filtered = val
+        end
+        # Then finally eval the expressions
+        if groupby != nothing
+            inner_results, inner_colnames = _select_from__group_by_internal(t, col, colors, counts, num_colors)
+        else
+            if isa(col, ColumnExprRef)
+                sym = col.sym
+                t = _eval_expr_internal(filtered, sym, colexpr)
+                inner_colnames, inner_results = t.headers, t.cols
+            else
+                inner_colnames, inner_results = val_table.headers, filtered
+            end
+        end
         push!(results, inner_results...)
         push!(out_colnames, inner_colnames...)
     end
-    Table("RESULTS", Tuple(out_colnames), Tuple(results))
+    return Table("RESULTS", out_colnames, results)
 end
-select_from__group_by(t, groupby::Symbol, colexprs::Tuple) =
-    select_from__group_by(t, groupby, colexprs...)
-select_from__group_by(t, groupby::Symbol, colexprs::Array) =
-    select_from__group_by(t, groupby, colexprs...)
 
 # Rename each unique item to a unique number, and get counts.
 # Eg: convert (5,7,7,2,7) -> (1,2,2,3,2) and [1,3,1]
@@ -200,7 +228,7 @@ _retrieve_col_names(colexprs...) =
 
 function _select_from__group_by_internal(t, colexpr::Column, colors, counts, num_colors)
     col = colexpr.name
-    vals_table = select_from(t, col)
+    vals_table = _select_from(t, col)
     vals = vals_table.cols
 
     results = []
@@ -222,7 +250,7 @@ end
 
 function _select_from__group_by_internal(t, colexpr::ColumnExprRef, colors, counts, num_colors)
     col, sym, expr = colexpr.name, colexpr.sym, colexpr.expr
-    val_table = select_from(t, col)
+    val_table = _select_from(t, col)
     vals = val_table.cols
 
     results = []
@@ -243,35 +271,6 @@ function _select_from__group_by_internal(t, colexpr::ColumnExprRef, colors, coun
     return results, out_colnames
 end
 
-function select_from__where(t, whereexpr::Expr, colexprs...)
-    wherecolexpr = _retrieve_col_name(whereexpr)
-    val_table = select_from(t, wherecolexpr.name)
-    vals = val_table.cols
-    sym, expr = wherecolexpr.sym, wherecolexpr.expr
-    # Get bitarray for whereexpr row-filter.
-    rowfilter = _eval_expr_internal(vals, sym, expr)
-
-    # Now get the actual values for the colexprs
-    results = []
-    out_colnames = []
-    for colexpr in colexprs
-        col = _retrieve_col_name(colexpr)
-        val_table = select_from(t, col.name)
-        val = val_table.cols
-        # Now filter with where
-        filtered = map(c->getindex(c, rowfilter.cols[1]), val)
-        # Then finally eval the expressions
-        if isa(col, ColumnExprRef)
-            sym = col.sym
-            t = _eval_expr_internal(filtered, sym, colexpr)
-        else
-            t = Table("", val_table.headers, filtered)
-        end
-        push!(results, t.cols...)
-        push!(out_colnames, t.headers...)
-    end
-    return Table("RESULTS", out_colnames, results)
-end
 
 # ----------------------- Now start the SQL interpreter part --------------
 
@@ -332,7 +331,7 @@ function macro_select(colexpr, fromexpr::Expr)
     if extraexpr.args[1] == Symbol("@GROUP") && extraexpr.args[3].args[1] == Symbol("@BY")
         groupcolexpr = quote_column_syms(extraexpr.args[3].args[3])
         return esc(quote
-            select_from__group_by($(fromexpr.args[3]), $groupcolexpr, $colexpr)
+            select_from($(fromexpr.args[3]), $colexpr; groupby=$groupcolexpr)
         end)
     end
 end

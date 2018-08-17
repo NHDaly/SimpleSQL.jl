@@ -56,13 +56,13 @@ insert_into_values(groceries, (5, "Cherries", 6, 2))
 insert_into_values(groceries, (6, "Chocolate syrup", 1, 4))
 
 
-select_from__group_by(groceries, :aisle, :name)
-select_from__group_by(groceries, :aisle, :aisle, :(sum(quantity)))
-select_from__group_by(groceries, :aisle, :(identity(aisle)))  # 😮
+select_from(groceries, :(sum(quantity)), where=:(aisle .== 2))
+select_from(groceries, :aisle, where=:(aisle .> 2))
 
-# TODO: need to figure out a better API to squish together all the select_ functions.
-select_from__where(groceries, :(aisle .== 2), :(sum(quantity)))
-select_from__where(groceries, :(aisle .> 2), :aisle)
+select_from(groceries, :name; groupby=:aisle)
+select_from(groceries, :aisle, :(sum(quantity)); groupby=:aisle)
+select_from(groceries, :(identity(aisle)); groupby=:aisle)  # 😮
+
 
 # MACRO SQL SYNTAX
 @CREATE @TABLE favorite_books ((:id, Int), ("name", String), (:rating, Real))
