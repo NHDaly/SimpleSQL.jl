@@ -2,7 +2,7 @@ module SQL
 using Serialization  # for file-backed datastores.
 
 # SQL query-style API
-export @SQL, @CREATE, @INSERT, @SELECT
+export @SQL, @CREATE, @INSERT, @SELECT, @WHERE, @GROUP
 # julia function-style api.
 export create_table, insert_into_values, select_from
 # Disk i/o
@@ -12,9 +12,6 @@ struct Table
     title::String
     headers
     cols
-    #backing_file  # if not empty, this data is stored on disk in this file
-    #Table(title,headers,cols) = new(title,headers,cols, "")
-    #Table(title,headers,cols,backing_file) = new(title,headers,cols,backing_file)
 end
 """ users = create_table("users", (:id, Int64), (:name, String)) """
 create_table(title, key_pairs...) =
@@ -318,26 +315,54 @@ function quote_column_syms(colexpr::Expr)
     end
     colexpr
 end
-function macro_select(colexpr, fromexpr::Expr)
+function macro_select(colexpr, extraexpr::Expr)
+    parsed_exprs = parse_macro_block(colexpr, extraexpr)
+    colexpr, fromexpr, keyargs = parsed_exprs[1], parsed_exprs[2], parsed_exprs[3:end]
     colexpr = quote_column_syms(colexpr)
     @assert(fromexpr.args[1] == Symbol("@FROM"))
-    if length(fromexpr.args) < 4
-        return esc(quote
-            select_from($(fromexpr.args[3]), $colexpr)
-        end)
-    end
-    extraexpr = fromexpr.args[4]
-    @assert isa(extraexpr, Expr)
-    if extraexpr.args[1] == Symbol("@GROUP") && extraexpr.args[3].args[1] == Symbol("@BY")
-        groupcolexpr = quote_column_syms(extraexpr.args[3].args[3])
-        return esc(quote
-            select_from($(fromexpr.args[3]), $colexpr; groupby=$groupcolexpr)
-        end)
+    return quote
+        select_from($(esc(fromexpr.args[3])), $(esc(colexpr)); $(keyargs...))
     end
 end
 macro SELECT(colexpr, fromexpr::Expr)
     return macro_select(colexpr, fromexpr)
 end
+
+# Handle from start of @-section to next @-section
+function parse_macro_block(expr)
+    #return expr
+    return _macro_block(Val(expr.args[1]), expr)
+end
+function parse_macro_block(expr, extraexpr)
+    #res = expr
+    if expr isa Union{Symbol, QuoteNode} || expr.head == :tuple
+        res = expr
+    else
+        dump(expr)
+        res = _macro_block(Val(expr.args[1]), expr)
+    end
+    if length(extraexpr.args) > 3
+        nextexpr = extraexpr.args[4]
+        deleteat!(extraexpr.args, 4)
+        return res, parse_macro_block(extraexpr, nextexpr)...
+    end
+    return res, _macro_block(Val(extraexpr.args[1]), extraexpr)
+end
+
+
+function _macro_block(::Val{Symbol("@GROUP")}, expr)
+    @assert expr.args[3].args[1] == Symbol("@BY")
+    groupcolexpr = quote_column_syms(expr.args[3].args[3])
+    esc(:(groupby=$groupcolexpr))
+end
+function _macro_block(::Val{Symbol("@WHERE")}, expr)
+    whereexpr = quote_column_syms(expr.args[3])
+    esc(:(where=$whereexpr))
+end
+function _macro_block(::Val{S}, expr) where S
+    expr
+end
+
 
 """
         @SQL begin

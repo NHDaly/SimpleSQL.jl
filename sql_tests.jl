@@ -96,10 +96,10 @@ x = 2
 end
 
 # timing...
-t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
-@time t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
-@time @SELECT b, :(sum(a)) @FROM t @GROUP @BY b;
-@time @SELECT b, sum(a) @FROM t @GROUP @BY b;
+#t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
+#@time t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
+#@time @SELECT b, :(sum(a)) @FROM t @GROUP @BY b;
+#@time @SELECT b, sum(a) @FROM t @GROUP @BY b;
 
 # For if I use arrays in the RESULT table output instead
 #function Base.show(io::IO, t::Table)
