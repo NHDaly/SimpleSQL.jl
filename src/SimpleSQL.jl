@@ -169,6 +169,10 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
         if groupby != nothing
             # PARSE GROUP BY EXPRESSION
             grouped_table = _select_from(t, groupby)
+            if where != nothing
+                grouped_table = Table(grouped_table.title, grouped_table.headers,
+                     map(c->getindex(c, rowfilter.cols[1]), grouped_table.cols))
+            end
             grouping_vals = grouped_table.cols
             @assert length(grouping_vals) == 1
             colors, counts = color_unique_vals(grouping_vals[1])
@@ -185,23 +189,25 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
         for colexpr in colexprs
             col = _retrieve_col_name(t, colexpr)
             val_table = _select_from(t, col.name)
-            val = val_table.cols
             # Now filter with where
             if where != nothing
-                filtered = map(c->getindex(c, rowfilter.cols[1]), val)
+                filtered_table = Table(val_table.title, val_table.headers,
+                     map(c->getindex(c, rowfilter.cols[1]), val_table.cols))
+                #filtered_table = map(c->getindex(c, rowfilter.cols[1]), val)
             else
-                filtered = val
+                filtered_table = val_table
             end
             # Then finally eval the expressions
             if groupby != nothing
-                inner_results, inner_colnames = _select_from__group_by_internal(t, filtered, colors, counts, num_colors)
+                inner_results, inner_colnames = _select_from__group_by_internal(t, col, filtered_table, colors, counts, num_colors)
             else
+                filtered = filtered_table.cols
                 if isa(col, ColumnExprRef)
                     sym = col.sym
                     t = _eval_expr_internal(filtered, sym, colexpr)
                     inner_colnames, inner_results = t.headers, t.cols
                 else
-                    inner_colnames, inner_results = val_table.headers, filtered
+                    inner_colnames, inner_results = filtered_table.headers, filtered
                 end
             end
             push!(results, inner_results...)
@@ -245,10 +251,8 @@ function color_unique_vals(col::Array{T,1}) where T
     out, counts
 end
 
-function _select_from__group_by_internal(t, colexpr, colors, counts, num_colors)
-    vals_table = _select_from(t, colexpr.name)
+function _select_from__group_by_internal(t, colexpr, vals_table, colors, counts, num_colors)
     vals = vals_table.cols
-
     results = []
     out_colnames = _colnames_from_table(vals_table, colexpr)
     for v in vals

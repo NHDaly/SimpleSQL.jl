@@ -89,6 +89,10 @@ x = 2
 
 @SELECT aisle, length(aisle), sum(quantity) @FROM groceries @GROUP @BY aisle
 
+# WHERE
+prices = [2.50, 4.25]
+@SELECT name, quantity, $prices .* quantity @FROM groceries @WHERE occursin.(Ref(r"Chocolate"), name)
+
 @SQL begin
     @SELECT sum(quantity),
                 aisle
