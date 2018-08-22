@@ -32,7 +32,9 @@ select_from(t, :(uppercase.(name)))
 select_from(t, :id, :(sum(id)))
 select_from(t, :(length(id)))
 # TODO: this one is wrong. The system currently assumes every column name returns a column, but "*" returns all columns.
+# This should be 3 not 6.
 select_from(t, :(length(*)))
+@test_broken select_from(t, :(length(*))) == select_from(t, :(length(id)))
 
 t2 = create_table("nums", ("id",Int), ("n", Int))
 insert_into_values(t2, (2,3))
@@ -44,10 +46,8 @@ select_from(t2, :(sum(*)))
 
 # GROUP BY
 # internal
-SimpleSQL._retrieve_col_names(:id)
-SimpleSQL._retrieve_col_names(:id, :name)
-SimpleSQL._retrieve_col_names(:(sum(id)))
-SimpleSQL._retrieve_col_names(:(sum(id)), :name)
+SimpleSQL._retrieve_col_name(t, :id)
+SimpleSQL._retrieve_col_name(t, :(sum(id)))
 
 groceries = create_table("groceries", (:id, Int), (:name, String), (:quantity, Int), (:aisle, Int))
 insert_into_values(groceries, (1, "Bananas", 34, 7))

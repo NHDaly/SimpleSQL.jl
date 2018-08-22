@@ -78,19 +78,21 @@ end
 _select_from(t, columns::Tuple) = _select_from(t, columns...)
 _select_from(t, columns::Vector) = _select_from(t, columns...)
 
-# Use compiler dispatch to compare column names w/ :*
-matches(a::Val{S}, b::Val{S}) where {S} = true
-matches(a::Val{A}, b::Val{B}) where {A, B} = false
-matches(a::Val{A}, b::Val{:*}) where {A} = true
-matches(a::Val{:*}, b::Val{A}) where {A} = true
 # For a single symbol, just find the matching column name.
 function _select_from_internal(t, col::Symbol)
-    indices = Tuple(Iterators.flatten(findall(s -> matches(Val(s), Val(col)), t.headers)))
+    indices = _match_column_names(t, col)
     length(indices) >= 1 || error("Column $col does not exist.")
     Table("RESULTS", Tuple(t.headers[i] for i in indices), Tuple(t.cols[i] for i in indices))
 end
 _select_from_internal(t, c::String) = _select_from_internal(t, Symbol(c))
 _select_from_internal(t, expr::QuoteNode) = _select_from_internal(t, expr.value)
+# Use compiler dispatch to compare column names w/ :*
+matches(a::Val{S}, b::Val{S}) where {S} = true
+matches(a::Val{A}, b::Val{B}) where {A, B} = false
+matches(a::Val{A}, b::Val{:*}) where {A} = true
+matches(a::Val{:*}, b::Val{A}) where {A} = true
+_match_column_names(t, col::Symbol) =
+    Tuple(Iterators.flatten(findall(s -> matches(Val(s), Val(col)), t.headers)))
 
 # For expressions, we evaluate the expression with the column name replaced with
 # its value. This requires digging into the expression to find the column name,
@@ -121,8 +123,11 @@ end
 expr_to_col(table, _) = nothing, nothing
 function expr_to_col(table, expr::Expr)
     for (i,arg) in enumerate(expr.args)
-        if arg isa Symbol && arg in table.headers
-            return arg, Ref(expr.args, i)
+        if arg isa Union{Symbol,String}
+            indices = _match_column_names(table, Symbol(arg))
+            if !isempty(indices)
+                return arg, Ref(expr.args, i)
+            end
         end
         outcol, outref = expr_to_col(table, arg)
         outcol != nothing && return outcol, outref
@@ -153,6 +158,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
         results = out_table.cols
     else
         if where != nothing
+            # PARSE WHERE EXPRESSION
             wherecolexpr = _retrieve_col_name(t, where)
             val_table = _select_from(t, wherecolexpr.name)
             vals = val_table.cols
@@ -161,6 +167,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
             rowfilter = _eval_expr_internal(vals, sym, expr)
         end
         if groupby != nothing
+            # PARSE GROUP BY EXPRESSION
             grouped_table = _select_from(t, groupby)
             grouping_vals = grouped_table.cols
             @assert length(grouping_vals) == 1
@@ -187,7 +194,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
             end
             # Then finally eval the expressions
             if groupby != nothing
-                inner_results, inner_colnames = _select_from__group_by_internal(t, col, colors, counts, num_colors)
+                inner_results, inner_colnames = _select_from__group_by_internal(t, filtered, colors, counts, num_colors)
             else
                 if isa(col, ColumnExprRef)
                     sym = col.sym
