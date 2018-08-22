@@ -20,13 +20,14 @@ select_from(t, [:name, :id])
 select_from(t, :*, "name")
 
 # internals
-SimpleSQL.expr_to_col(t, :(sum(id)))
-SimpleSQL.expr_to_col(t, :(unique(name)))
-SimpleSQL.expr_to_col(t, :(length(*)))
+col,sym = SimpleSQL.expr_to_col(t, :(sum(id))); @test col == :id && sym isa Base.RefArray
+col,sym = SimpleSQL.expr_to_col(t, :(unique(name))); @test col == :name && sym isa Base.RefArray
+col,sym = SimpleSQL.expr_to_col(t, :(length(*))); @test col == :* && sym isa Base.RefArray
 
 # expressions
-select_from(t, :(sum("id")))
-select_from(t, [:(sum(id)), :(length(name))])
+@test select_from(t, :(sum("id"))).cols == select_from(t, :(sum(id))).cols
+@test all(select_from(t, :(sum(id))).cols .== [6])
+@test select_from(t, [:(sum(id)), :(length(name))]).cols == [6 3]
 select_from(t, :(sum(id)), :(uppercase.(name)))
 select_from(t, :(uppercase.(name)))
 select_from(t, :id, :(sum(id)))
@@ -42,12 +43,12 @@ insert_into_values(t2, (3,5))
 
 # Oh, this isn't supposed to work! So what, SUM() always has to take a column?
 select_from(t2, :(sum(*)))
-#select_from(t2, :(:aisle .+ 2))  # Not sure why this one doesn't work..
+@test_broken select_from(t2, :(:aisle .+ 2))  # Not sure why this one doesn't work..
 
 # GROUP BY
 # internal
-SimpleSQL._retrieve_col_name(t, :id)
-SimpleSQL._retrieve_col_name(t, :(sum(id)))
+@test SimpleSQL._retrieve_col_name(t, :id) isa SimpleSQL.Column
+@test SimpleSQL._retrieve_col_name(t, :(sum(id))) isa SimpleSQL.ColumnExprRef
 
 groceries = create_table("groceries", (:id, Int), (:name, String), (:quantity, Int), (:aisle, Int))
 insert_into_values(groceries, (1, "Bananas", 34, 7))
@@ -58,12 +59,13 @@ insert_into_values(groceries, (5, "Cherries", 6, 2))
 insert_into_values(groceries, (6, "Chocolate syrup", 1, 4))
 
 
-select_from(groceries, :(sum(quantity)), where=:(aisle .== 2))
-select_from(groceries, :aisle, where=:(aisle .> 2))
+@test select_from(groceries, :(sum(quantity)), where=:(aisle .== 2)).cols[1] == 9
+@test select_from(groceries, :aisle, where=:(aisle .> 2)).cols == permutedims([7 12 4])
 
 select_from(groceries, :name; groupby=:aisle)
 select_from(groceries, :aisle, :(sum(quantity)); groupby=:aisle)
-select_from(groceries, :(identity(aisle)); groupby=:aisle)  # 😮
+# This one is wrong...
+@test_broken select_from(groceries, :(identity(aisle)); groupby=:aisle) == select_from(groceries, :aisle; groupby=:aisle)
 
 
 # MACRO SQL SYNTAX
@@ -91,7 +93,13 @@ x = 2
 
 # WHERE
 prices = [2.50, 4.25]
-@SELECT name, quantity, $prices .* quantity @FROM groceries @WHERE occursin.(Ref(r"Chocolate"), name)
+x = @SQL begin
+    @SELECT name, quantity, $prices .* quantity
+    @FROM groceries
+    @WHERE occursin.(Ref(r"Chocolate"), name)
+end
+@test x.cols == ["Dark Chocolate Bars" 2  5.0
+                 "Chocolate syrup"     1  4.25]
 
 @SQL begin
     @SELECT sum(quantity),
@@ -112,7 +120,10 @@ f = joinpath(tempdir(), "groceries")
 write_table_to_disk(groceries, f)
 groceries2 = read_table_from_disk(f)
 
-@SQL begin
+x = @SQL begin
     @SELECT sum(quantity), aisle
     @FROM groceries2 @GROUP @BY aisle
 end
+
+@test x.headers == ["sum(quantity)", :aisle]
+@test x.cols == [34 7; 9 2; 1 12; 1 4]
