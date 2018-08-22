@@ -66,7 +66,7 @@ select_from(groceries, :(identity(aisle)); groupby=:aisle)  # 😮
 
 
 # MACRO SQL SYNTAX
-@CREATE @TABLE favorite_books ((:id, Int), ("name", String), (:rating, Real))
+@CREATE @TABLE favorite_books (:id, Int), ("name", String), (:rating, Real)
 @INSERT @INTO favorite_books @VALUES (1, "Eragon", 3.5)
 
 @SELECT :* @FROM favorite_books
