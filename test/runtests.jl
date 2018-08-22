@@ -1,4 +1,4 @@
-include("../SimpleSQL.jl")
+include("../src/SimpleSQL.jl")
 using .SimpleSQL
 using Test
 
@@ -20,8 +20,9 @@ select_from(t, [:name, :id])
 select_from(t, :*, "name")
 
 # internals
-SimpleSQL.expr_to_cols([:(sum(id)), :(unique(name))])
-SimpleSQL.expr_to_col(:(length(*)))
+SimpleSQL.expr_to_col(t, :(sum(id)))
+SimpleSQL.expr_to_col(t, :(unique(name)))
+SimpleSQL.expr_to_col(t, :(length(*)))
 
 # expressions
 select_from(t, :(sum("id")))

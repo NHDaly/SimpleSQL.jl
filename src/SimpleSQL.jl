@@ -96,7 +96,7 @@ _select_from_internal(t, expr::QuoteNode) = _select_from_internal(t, expr.value)
 # its value. This requires digging into the expression to find the column name,
 # retrieving the column(s), and then evaluating the expr with the column(s) value(s).
 function _select_from_internal(t, expr::Expr)
-    col, sym = expr_to_col(expr)
+    col, sym = expr_to_col(t, expr)
     val_table = _select_from(t, col)
     val = val_table.cols
     return _eval_expr_internal(val,sym, expr)
@@ -116,24 +116,18 @@ function _eval_expr_internal(val,sym, expr::Expr)
 end
 # Convert :(sum(id)) to :id, :(sum(<placeholder>)) so that the column can be
 #  retrieved and its value inserted into the expr.
-function expr_to_cols(expressions::Vector{Expr})
-    cols, syms = Vector{Symbol}(), Vector{Base.RefArray}()
-    for expr in expressions
-        c, s = expr_to_col(expr)
-        push!(cols, c); push!(syms, s);
+# Note: returns the first match it finds.
+# TODO: would be better to return _all_ matches so you can e.g. add columns
+expr_to_col(table, _) = nothing, nothing
+function expr_to_col(table, expr::Expr)
+    for (i,arg) in enumerate(expr.args)
+        if arg isa Symbol && arg in table.headers
+            return arg, Ref(expr.args, i)
+        end
+        outcol, outref = expr_to_col(table, arg)
+        outcol != nothing && return outcol, outref
     end
-    cols,syms
-end
-function expr_to_col(expr::Expr)
-    head = expr.head
-    if head == :call
-        column = expr.args[2]
-        ref = Ref(expr.args, 2)
-    elseif head == :.
-        column = expr.args[2].args[1]
-        ref = Ref(expr.args[2].args, 1)
-    end
-    return column, ref
+    return nothing, nothing
 end
 
 struct SelectResult
@@ -159,7 +153,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
         results = out_table.cols
     else
         if where != nothing
-            wherecolexpr = _retrieve_col_name(where)
+            wherecolexpr = _retrieve_col_name(t, where)
             val_table = _select_from(t, wherecolexpr.name)
             vals = val_table.cols
             sym, expr = wherecolexpr.sym, wherecolexpr.expr
@@ -182,7 +176,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
         results = []
         out_colnames = []
         for colexpr in colexprs
-            col = _retrieve_col_name(colexpr)
+            col = _retrieve_col_name(t, colexpr)
             val_table = _select_from(t, col.name)
             val = val_table.cols
             # Now filter with where
@@ -221,9 +215,8 @@ struct ColumnExprRef
     sym
     expr::Expr
 end
-_retrieve_col_name(col::Symbol) = Column(col)
-_retrieve_col_name(expr::Expr) = ColumnExprRef(expr_to_col(expr)..., expr)
-_retrieve_col_names(colexprs...) = [_retrieve_col_name(col) for col in colexprs]
+_retrieve_col_name(t, col::Symbol) = Column(col)
+_retrieve_col_name(t, expr::Expr) = ColumnExprRef(expr_to_col(t, expr)..., expr)
 
 # -- Groupby implementation
 # Rename each unique item to a unique number, and get counts.
