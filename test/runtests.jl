@@ -1,4 +1,4 @@
-include("sql.jl")
+include("../SimpleSQL.jl")
 using .SimpleSQL
 using Test
 
