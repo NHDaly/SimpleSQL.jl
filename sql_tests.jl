@@ -1,5 +1,6 @@
 include("sql.jl")
 using .SQL
+using Test
 
 # CREATE TABLE
 create_table("hi", ("id",Int))
@@ -12,15 +13,15 @@ insert_into_values(t, (3,"max"))
 
 # SELECT
 # column name
-select_from(t, "name")
-select_from(t, "*")
-select_from(t, :*)
+@test select_from(t, "name").cols == permutedims(["sarah" "nathan" "max"])
+@test select_from(t, "*").cols == [1 "sarah"; 2 "nathan"; 3 "max"]
+@test select_from(t, :*) == select_from(t, "*")
 select_from(t, [:name, :id])
 select_from(t, :*, "name")
 
 # internals
-SQL.expr_to_cols([:(sum(id)), :(unique(name))])
-SQL.expr_to_col(:(length(*)))
+SimpleSQL.expr_to_cols([:(sum(id)), :(unique(name))])
+SimpleSQL.expr_to_col(:(length(*)))
 
 # expressions
 select_from(t, :(sum("id")))
@@ -42,13 +43,13 @@ select_from(t2, :(sum(*)))
 
 # GROUP BY
 # internal
-SQL._retrieve_col_names(:id)
-SQL._retrieve_col_names(:id, :name)
-SQL._retrieve_col_names(:(sum(id)))
-SQL._retrieve_col_names(:(sum(id)), :name)
+SimpleSQL._retrieve_col_names(:id)
+SimpleSQL._retrieve_col_names(:id, :name)
+SimpleSQL._retrieve_col_names(:(sum(id)))
+SimpleSQL._retrieve_col_names(:(sum(id)), :name)
 
 groceries = create_table("groceries", (:id, Int), (:name, String), (:quantity, Int), (:aisle, Int))
-insert_into_values(groceries, (1, "Bananas", 56, 7))
+insert_into_values(groceries, (1, "Bananas", 34, 7))
 insert_into_values(groceries, (2, "Peanut Butter", 1, 2))
 insert_into_values(groceries, (3, "Dark Chocolate Bars", 2, 2))
 insert_into_values(groceries, (4, "Ice cream", 1, 12))
@@ -85,7 +86,7 @@ select_from(groceries, :(identity(aisle)); groupby=:aisle)  # 😮
 x = 2
 @SELECT aisle, aisle .+ $x*2 @FROM groceries
 
-@SELECT aisle, aisle .+ $x*2 @FROM groceries
+@SELECT aisle, length(aisle), sum(quantity) @FROM groceries @GROUP @BY aisle
 
 @SQL begin
     @SELECT sum(quantity),
@@ -100,16 +101,6 @@ end
 #@time t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
 #@time @SELECT b, :(sum(a)) @FROM t @GROUP @BY b;
 #@time @SELECT b, sum(a) @FROM t @GROUP @BY b;
-
-# For if I use arrays in the RESULT table output instead
-#function Base.show(io::IO, t::Table)
-#    str = t.title *"\n"*
-#        " "*join(t.headers, "\t| ") *"\n"*
-#        join(["-"^(length(tostring(h))+1) for h in t.headers], "\t|") *"\n";
-#    print(io, str)
-#    Base.print_array(stdout, t.cols)
-#end
-
 
 # Disk I/O
 f = joinpath(tempdir(), "groceries")
