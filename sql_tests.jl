@@ -1,5 +1,5 @@
 include("sql.jl")
-using .SQL
+using .SimpleSQL
 using Test
 
 # CREATE TABLE

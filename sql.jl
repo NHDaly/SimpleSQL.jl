@@ -1,4 +1,4 @@
-module SQL
+module SimpleSQL
 using Serialization  # for file-backed datastores.
 
 # SQL query-style API
