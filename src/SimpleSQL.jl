@@ -233,7 +233,20 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing, callingmodu
     end
     # Trim all columns to the same length and return results as a Matrix.
     minlen = minimum(length.(results))
-    return SelectResult(out_colnames, hcat(collect(r[end-minlen+1:end] for r in results)...))
+    return SelectResult(out_colnames, hcat_no_promote(minlen, results))
+end
+function hcat_no_promote(minlen, results)
+    eltypes = unique([eltype(r) for r in results])
+    results = collect(r[end-minlen+1:end] for r in results)
+    if length(eltypes) == 1
+        return hcat(results...)
+    end
+    out = Matrix{Any}(undef, minlen, length(results))
+    for (i,r) in enumerate(results)
+        r = [r...]
+        out[:,i] .= r
+    end
+    return out
 end
 
 # Types for dispatching to handle columns as expression.
