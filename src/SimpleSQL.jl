@@ -134,7 +134,7 @@ function expr_to_col(table, expr::Expr)
         if arg isa Union{Symbol,String}
             indices = _match_column_names(table, Symbol(arg))
             if !isempty(indices)
-                push!(outs, (arg, Ref(expr.args, i)))
+                push!(outs, (Symbol(arg), Ref(expr.args, i)))
             end
         end
         append!(outs, expr_to_col(table, arg))
