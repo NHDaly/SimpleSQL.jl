@@ -13,8 +13,8 @@ insert_into_values(t, (3,"max"))
 
 # SELECT
 # column name
-@test select_from(t, "name").cols == permutedims(["sarah" "nathan" "max"])
-@test select_from(t, "*").cols == [1 "sarah"; 2 "nathan"; 3 "max"]
+@test select_from(t, "name").value == permutedims(["sarah" "nathan" "max"])
+@test select_from(t, "*").values == [1 "sarah"; 2 "nathan"; 3 "max"]
 @test select_from(t, :*) == select_from(t, "*")
 select_from(t, [:name, :id])
 select_from(t, :*, "name")
@@ -25,9 +25,9 @@ col,sym = SimpleSQL.expr_to_col(t, :(unique(name))); @test col == :name && sym i
 col,sym = SimpleSQL.expr_to_col(t, :(length(*))); @test col == :* && sym isa Base.RefArray
 
 # expressions
-@test select_from(t, :(sum("id"))).cols == select_from(t, :(sum(id))).cols
-@test all(select_from(t, :(sum(id))).cols .== [6])
-@test select_from(t, [:(sum(id)), :(length(name))]).cols == [6 3]
+@test select_from(t, :(sum("id"))).values == select_from(t, :(sum(id))).values
+@test all(select_from(t, :(sum(id))).values .== [6])
+@test select_from(t, [:(sum(id)), :(length(name))]).values == [6 3]
 select_from(t, :(sum(id)), :(uppercase.(name)))
 select_from(t, :(uppercase.(name)))
 select_from(t, :id, :(sum(id)))
@@ -59,8 +59,8 @@ insert_into_values(groceries, (5, "Cherries", 6, 2))
 insert_into_values(groceries, (6, "Chocolate syrup", 1, 4))
 
 
-@test select_from(groceries, :(sum(quantity)), where=:(aisle .== 2)).cols[1] == 9
-@test select_from(groceries, :aisle, where=:(aisle .> 2)).cols == permutedims([7 12 4])
+@test select_from(groceries, :(sum(quantity)), where=:(aisle .== 2)).values[1] == 9
+@test select_from(groceries, :aisle, where=:(aisle .> 2)).values == permutedims([7 12 4])
 
 select_from(groceries, :name; groupby=:aisle)
 select_from(groceries, :aisle, :(sum(quantity)); groupby=:aisle)
@@ -98,8 +98,8 @@ x = @SQL begin
     @FROM groceries
     @WHERE occursin.(Ref(r"Chocolate"), name)
 end
-@test x.cols == ["Dark Chocolate Bars" 2  5.0
-                 "Chocolate syrup"     1  4.25]
+@test x.values == ["Dark Chocolate Bars" 2  5.0
+                   "Chocolate syrup"     1  4.25]
 
 @SQL begin
     @SELECT sum(quantity),
@@ -134,4 +134,4 @@ x = @SQL begin
 end
 
 @test x.headers == ["sum(quantity)", :aisle]
-@test x.cols == [34 7; 9 2; 1 12; 1 4]
+@test x.values == [34 7; 9 2; 1 12; 1 4]

@@ -135,16 +135,16 @@ end
 
 struct SelectResult
     headers
-    cols::Matrix
+    values::Matrix
 end
 import Base: ==
-==(a::SelectResult, b::SelectResult) = (a.headers == b.headers && a.cols == b.cols)
+==(a::SelectResult, b::SelectResult) = (a.headers == b.headers && a.values == b.values)
 
 function Base.show(io::IO, t::SelectResult)
     row_elts = []
     max_elt_sizes = zeros(Int, length(t.headers))
-    for r in 1:size(t.cols)[1]
-        elts = [tostring(v) for v in t.cols[r,:]]
+    for r in 1:size(t.values)[1]
+        elts = [tostring(v) for v in t.values[r,:]]
         push!(row_elts, elts)
         max_elt_sizes .= max.(max_elt_sizes, length.(elts))
     end
