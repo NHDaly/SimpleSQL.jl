@@ -141,10 +141,20 @@ import Base: ==
 ==(a::SelectResult, b::SelectResult) = (a.headers == b.headers && a.cols == b.cols)
 
 function Base.show(io::IO, t::SelectResult)
-    println(io, join(t.headers, " | ") *"\n"*
-                join(["-"^(length(tostring(h))+1) for h in t.headers], "---"));
-    Base.print_matrix(io, t.cols,
-                      " ", " | ")
+    row_elts = []
+    max_elt_sizes = zeros(Int, length(t.headers))
+    for r in 1:size(t.cols)[1]
+        elts = [tostring(v) for v in t.cols[r,:]]
+        push!(row_elts, elts)
+        max_elt_sizes .= max.(max_elt_sizes, length.(elts))
+    end
+    hstrs = [tostring(h) for h in t.headers]
+    spaced_hstrs = [" "^(max(max_elt_sizes[i], length(h))-length(h))*h for (i,h) in enumerate(hstrs)]
+    println(io, join(spaced_hstrs, " | ") *"\n"*
+                join(["-"^(length(h)) for h in spaced_hstrs], "-|-"));
+    for elts in row_elts
+        println(io, join([" "^(max(0, length(spaced_hstrs[i])-length(s))) * s for (i,s) in enumerate(elts)], " | "))
+    end
 end
 
 select_from(t, columns::Tuple; where=nothing, groupby=nothing, callingmodule=Main) =
