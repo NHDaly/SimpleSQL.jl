@@ -16,6 +16,10 @@ end
 """ users = create_table("users", (:id, Int64), (:name, String)) """
 create_table(title, key_pairs...) =
     create_table(title, collect((Symbol(s),t) for (s,t) in key_pairs))
+function create_table(title, key_pairs::Vector{Tuple{Symbol, Type}})
+    cols = Tuple((Vector{T}() for (s,T) in key_pairs))
+    return Table(title, [k for (k,v) in key_pairs], cols)
+end
 function create_table(title, key_pairs::Vector{Tuple{Symbol, DataType}})
     cols = Tuple((Vector{T}() for (s,T) in key_pairs))
     return Table(title, [k for (k,v) in key_pairs], cols)
@@ -39,17 +43,11 @@ end
 
 tostring(x) = join([x], "")  # String(::Expr) fails for reasons..
 function Base.show(io::IO, t::Table)
-    str = t.title *"\n"*
-        " "*join(t.headers, "\t| ") *"\n"*
-        join(["-"^(length(tostring(h))+1) for h in t.headers], "\t|") *"\n";
-        # TODO: i'm only printing up to the minimum length of a column, for things like `SELECT id, SUM(id) from t`
-    num_cols = minimum(length.(t.cols))
-    num_cols_capped = min(15, num_cols)  # cap out so you don't freeze printing.
-    str *= join([" "*join([c[i] for c in t.cols], "\t| ") for i in 1:num_cols_capped],"\n") *"\n"
-    if (num_cols_capped < num_cols)
-        str *= join(["..." for h in t.headers], "\t|")
+    numrows = length(t.cols) > 0 ? length(t.cols[1]) : 0
+    println(io, "$(t.title)   $numrows rows")
+    for (i, h) in enumerate(t.headers)
+        println(io, "$h::$(eltype(t.cols[i]))")
     end
-    print(io, str)
 end
 
 """ insert_into_values(users, (1, "nathan")) """
@@ -66,26 +64,26 @@ end
     _select_from(users, :id, :(uppercase.(name)))
  Perform a SELECT query on t. Queries can be column names or expressions.
  """
-function _select_from(t, columns...)
+function _select_from(t, columns...; callingmodule=Main)
     out_names, out_cols = [], []
     for c in columns
-        r = _select_from_internal(t, c)
+        r = _select_from_internal(t, c, callingmodule)
         push!(out_names, r.headers)
         push!(out_cols, r.cols)
     end
     Table("RESULTS", Tuple(Iterators.flatten(out_names)), Tuple(Iterators.flatten(out_cols)))
 end
-_select_from(t, columns::Tuple) = _select_from(t, columns...)
-_select_from(t, columns::Vector) = _select_from(t, columns...)
+_select_from(t, columns::Tuple; callingmodule=Main) = _select_from(t, columns...; callingmodule=callingmodule)
+_select_from(t, columns::Vector; callingmodule=Main) = _select_from(t, columns...; callingmodule=callingmodule)
 
 # For a single symbol, just find the matching column name.
-function _select_from_internal(t, col::Symbol)
+function _select_from_internal(t, col::Symbol, callingmodule)
     indices = _match_column_names(t, col)
     length(indices) >= 1 || error("Column $col does not exist.")
     Table("RESULTS", Tuple(t.headers[i] for i in indices), Tuple(t.cols[i] for i in indices))
 end
-_select_from_internal(t, c::String) = _select_from_internal(t, Symbol(c))
-_select_from_internal(t, expr::QuoteNode) = _select_from_internal(t, expr.value)
+_select_from_internal(t, c::String, callingmodule) = _select_from_internal(t, Symbol(c), callingmodule)
+_select_from_internal(t, expr::QuoteNode, callingmodule) = _select_from_internal(t, expr.value, callingmodule)
 # Use compiler dispatch to compare column names w/ :*
 matches(a::Val{S}, b::Val{S}) where {S} = true
 matches(a::Val{A}, b::Val{B}) where {A, B} = false
@@ -97,17 +95,17 @@ _match_column_names(t, col::Symbol) =
 # For expressions, we evaluate the expression with the column name replaced with
 # its value. This requires digging into the expression to find the column name,
 # retrieving the column(s), and then evaluating the expr with the column(s) value(s).
-function _select_from_internal(t, expr::Expr)
+function _select_from_internal(t, expr::Expr, callingmodule)
     col, sym = expr_to_col(t, expr)
-    val_table = _select_from(t, col)
+    val_table = _select_from(t, col; callingmodule=callingmodule)
     val = val_table.cols
-    return _eval_expr_internal(val,sym, expr)
+    return _eval_expr_internal(val,sym, expr, callingmodule)
 end
-function _eval_expr_internal(val,sym, expr::Expr)
+function _eval_expr_internal(val,sym, expr::Expr, callingmodule)
     out_colname = tostring(expr)  # Before mutating expr.
     global ____select_from_col = permutedims(reshape(collect(Iterators.flatten(val)), length(val),:))
     sym[] = ____select_from_col
-    r = eval(expr)
+    r = Core.eval(callingmodule, expr)  # eval the expression in the calling module
     # Now turn the 3x1 Arrays back into a 3-el Vector
     if length(size(r)) == 2 && size(r)[end] == 1
         r = reshape(r, size(r)[1])
@@ -149,26 +147,28 @@ function Base.show(io::IO, t::SelectResult)
                       " ", " | ")
 end
 
-select_from(t, columns::Tuple; where=nothing, groupby=nothing) = select_from(t, columns...; where=where, groupby=groupby)
-select_from(t, columns::Vector; where=nothing, groupby=nothing) = select_from(t, columns...; where=where, groupby=groupby)
-function select_from(t, colexprs...; where=nothing, groupby=nothing)
+select_from(t, columns::Tuple; where=nothing, groupby=nothing, callingmodule=Main) =
+    select_from(t, columns...; where=where, groupby=groupby, callingmodule=callingmodule)
+select_from(t, columns::Vector; where=nothing, groupby=nothing, callingmodule=Main) =
+    select_from(t, columns...; where=where, groupby=groupby, callingmodule=callingmodule)
+function select_from(t, colexprs...; where=nothing, groupby=nothing, callingmodule=Main)
     if where == nothing && groupby == nothing
-        out_table = _select_from(t, colexprs...)
+        out_table = _select_from(t, colexprs...; callingmodule=callingmodule)
         out_colnames = out_table.headers
         results = out_table.cols
     else
         if where != nothing
             # PARSE WHERE EXPRESSION
             wherecolexpr = _retrieve_col_name(t, where)
-            val_table = _select_from(t, wherecolexpr.name)
+            val_table = _select_from(t, wherecolexpr.name; callingmodule=callingmodule)
             vals = val_table.cols
             sym, expr = wherecolexpr.sym, wherecolexpr.expr
             # Get bitarray for whereexpr row-filter.
-            rowfilter = _eval_expr_internal(vals, sym, expr)
+            rowfilter = _eval_expr_internal(vals, sym, expr, callingmodule)
         end
         if groupby != nothing
             # PARSE GROUP BY EXPRESSION
-            grouped_table = _select_from(t, groupby)
+            grouped_table = _select_from(t, groupby; callingmodule=callingmodule)
             if where != nothing
                 grouped_table = Table(grouped_table.title, grouped_table.headers,
                      map(c->getindex(c, rowfilter.cols[1]), grouped_table.cols))
@@ -188,7 +188,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
         out_colnames = []
         for colexpr in colexprs
             col = _retrieve_col_name(t, colexpr)
-            val_table = _select_from(t, col.name)
+            val_table = _select_from(t, col.name; callingmodule=callingmodule)
             # Now filter with where
             if where != nothing
                 filtered_table = Table(val_table.title, val_table.headers,
@@ -199,12 +199,12 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing)
             end
             # Then finally eval the expressions
             if groupby != nothing
-                inner_results, inner_colnames = _select_from__group_by_internal(t, col, filtered_table, colors, counts, num_colors)
+                inner_results, inner_colnames = _select_from__group_by_internal(t, col, filtered_table, colors, counts, num_colors, callingmodule)
             else
                 filtered = filtered_table.cols
                 if isa(col, ColumnExprRef)
                     sym = col.sym
-                    t = _eval_expr_internal(filtered, sym, colexpr)
+                    t = _eval_expr_internal(filtered, sym, colexpr, callingmodule)
                     inner_colnames, inner_results = t.headers, t.cols
                 else
                     inner_colnames, inner_results = filtered_table.headers, filtered
@@ -237,7 +237,7 @@ _retrieve_col_name(t, expr::Expr) = ColumnExprRef(expr_to_col(t, expr)..., expr)
 function color_unique_vals(col::Array{T,1}) where T
     seen = Dict{T, Int64}()
     cur = 1
-    out = copy(col)
+    out = Array{Int64, 1}(undef, length(col))
     counts = []
     for (i,v) in enumerate(col)
         if !(v in keys(seen))
@@ -251,7 +251,7 @@ function color_unique_vals(col::Array{T,1}) where T
     out, counts
 end
 
-function _select_from__group_by_internal(t, colexpr, vals_table, colors, counts, num_colors)
+function _select_from__group_by_internal(t, colexpr, vals_table, colors, counts, num_colors, callingmodule)
     vals = vals_table.cols
     results = []
     out_colnames = _colnames_from_table(vals_table, colexpr)
@@ -263,7 +263,7 @@ function _select_from__group_by_internal(t, colexpr, vals_table, colors, counts,
 
         row_results = []
         for val in splits
-            push!(row_results, _get_val_from_split(val, colexpr)...)
+            push!(row_results, _get_val_from_split(val, colexpr, callingmodule)...)
         end
         push!(results, row_results)
     end
@@ -273,12 +273,12 @@ end
 _colnames_from_table(t, colexpr::Column) = t.headers
 _colnames_from_table(t, colexpr::ColumnExprRef) = [tostring(colexpr.expr)]
 
-function _get_val_from_split(v, colexpr::Column)
+function _get_val_from_split(v, colexpr::Column, callingmodule)
     return [v[1]]
 end
-function _get_val_from_split(v, colexpr::ColumnExprRef)
+function _get_val_from_split(v, colexpr::ColumnExprRef, callingmodule)
     sym, expr = colexpr.sym, colexpr.expr
-    out_t = _eval_expr_internal(v, sym, expr)
+    out_t = _eval_expr_internal(v, sym, expr, callingmodule)
     return out_t.cols[1]
 end
 
@@ -329,17 +329,17 @@ function quote_column_syms(colexpr::Expr)
     end
     colexpr
 end
-function macro_select(colexpr, extraexpr::Expr)
+function macro_select(colexpr, extraexpr::Expr, callingmodule)
     parsed_exprs = parse_macro_block(colexpr, extraexpr)
     colexpr, fromexpr, keyargs = parsed_exprs[1], parsed_exprs[2], parsed_exprs[3:end]
     colexpr = quote_column_syms(colexpr)
     @assert(fromexpr.args[1] == Symbol("@FROM"))
     return quote
-        select_from($(esc(fromexpr.args[3])), $(esc(colexpr)); $(keyargs...))
+        select_from($(esc(fromexpr.args[3])), $(esc(colexpr)); $(keyargs...), callingmodule=$callingmodule)
     end
 end
 macro SELECT(colexpr, fromexpr::Expr)
-    return macro_select(colexpr, fromexpr)
+    return macro_select(colexpr, fromexpr, __module__)
 end
 
 # Handle from start of @-section to next @-section

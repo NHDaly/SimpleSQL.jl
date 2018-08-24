@@ -109,6 +109,14 @@ end
         @BY aisle
 end
 
+# Evaling custom functions:
+foo(x) = x.+2
+@SELECT foo(aisle) @FROM groceries
+
+using Statistics
+@SELECT aisle, median(quantity) @FROM groceries @GROUP @BY aisle
+
+
 # timing...
 #t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
 #@time t = SQL.Table("t", (:a, :b), (rand(1:10, 1000000), rand(1:10, 1000000)));
