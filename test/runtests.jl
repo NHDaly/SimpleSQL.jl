@@ -13,16 +13,20 @@ insert_into_values(t, (3,"max"))
 
 # SELECT
 # column name
-@test select_from(t, "name").value == permutedims(["sarah" "nathan" "max"])
+@test select_from(t, "name").values == permutedims(["sarah" "nathan" "max"])
 @test select_from(t, "*").values == [1 "sarah"; 2 "nathan"; 3 "max"]
 @test select_from(t, :*) == select_from(t, "*")
 select_from(t, [:name, :id])
 select_from(t, :*, "name")
 
 # internals
-col,sym = SimpleSQL.expr_to_col(t, :(sum(id))); @test col == :id && sym isa Base.RefArray
-col,sym = SimpleSQL.expr_to_col(t, :(unique(name))); @test col == :name && sym isa Base.RefArray
-col,sym = SimpleSQL.expr_to_col(t, :(length(*))); @test col == :* && sym isa Base.RefArray
+col,sym = SimpleSQL.expr_to_col(t, :(sum(id)))[1]; @test col == :id && sym isa Base.RefArray
+col,sym = SimpleSQL.expr_to_col(t, :(unique(name)))[1]; @test col == :name && sym isa Base.RefArray
+col,sym = SimpleSQL.expr_to_col(t, :(length(*)))[1]; @test col == :* && sym isa Base.RefArray
+cols = SimpleSQL.expr_to_col(t, :(id.+id))
+cols = SimpleSQL.expr_to_col(t, :(id.+name))
+@test length(cols) == 2
+@test cols[1][2] != cols[2][2]
 
 # expressions
 @test select_from(t, :(sum("id"))).values == select_from(t, :(sum(id))).values
@@ -49,6 +53,9 @@ select_from(t2, :(sum(*)))
 # internal
 @test SimpleSQL._retrieve_col_name(t, :id) isa SimpleSQL.Column
 @test SimpleSQL._retrieve_col_name(t, :(sum(id))) isa SimpleSQL.ColumnExprRef
+@test SimpleSQL._retrieve_col_name(t, :(id .+ id)) isa SimpleSQL.MultiColumnExprRef
+@test SimpleSQL._retrieve_col_name(t, :(id .+ name)) isa SimpleSQL.MultiColumnExprRef
+@test SimpleSQL._retrieve_col_name(t, :(id .+ name)).names == [:id, :name]
 
 groceries = create_table("groceries", (:id, Int), (:name, String), (:quantity, Int), (:aisle, Int))
 insert_into_values(groceries, (1, "Bananas", 34, 7))
@@ -87,7 +94,7 @@ select_from(groceries, :aisle, :(sum(quantity)); groupby=:aisle)
 @SELECT name, sum(quantity) @FROM groceries @GROUP @BY aisle
 @SELECT sum(quantity) @FROM groceries @GROUP @BY aisle
 x = 2
-@SELECT aisle, aisle .+ $x*2 @FROM groceries
+@SELECT aisle, aisle .+ $x.*2 @FROM groceries
 
 @SELECT aisle, length(aisle), sum(quantity) @FROM groceries @GROUP @BY aisle
 
@@ -114,7 +121,18 @@ foo(x) = x.+2
 @SELECT foo(aisle) @FROM groceries
 
 using Statistics
-@SELECT aisle, median(quantity) @FROM groceries @GROUP @BY aisle
+x = @SELECT aisle, median(quantity) @FROM groceries @GROUP @BY aisle
+@test x.values[1,:] == [7, 34.0]
+
+# Evaling with multiple columns
+x = @SELECT id, id .+ id @FROM groceries
+@test x.values[1:2,:] == [1 2; 2 4]
+x = @SELECT id, aisle, id .* aisle @FROM groceries
+@test x.values[1:3,:] == [1 7 7; 2 2 4; 3 2 6]
+
+# Evaling with NO columns
+x = @SELECT 5+5 @FROM groceries
+@test x.values[1] == 10
 
 
 # timing...

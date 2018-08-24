@@ -96,15 +96,24 @@ _match_column_names(t, col::Symbol) =
 # its value. This requires digging into the expression to find the column name,
 # retrieving the column(s), and then evaluating the expr with the column(s) value(s).
 function _select_from_internal(t, expr::Expr, callingmodule)
-    col, sym = expr_to_col(t, expr)
+    col = _retrieve_col_name(t, expr)
     val_table = _select_from(t, col; callingmodule=callingmodule)
     val = val_table.cols
-    return _eval_expr_internal(val,sym, expr, callingmodule)
+    return _eval_expr_internal(val, col, col.expr, callingmodule)
 end
-function _eval_expr_internal(val,sym, expr::Expr, callingmodule)
+function _eval_expr_internal(val, col, expr::Expr, callingmodule)
     out_colname = tostring(expr)  # Before mutating expr.
-    global ____select_from_col = permutedims(reshape(collect(Iterators.flatten(val)), length(val),:))
-    sym[] = ____select_from_col
+    if col isa ColumnExprRef
+        syms = [col.sym]
+        vals = (val,)
+    else
+        syms = col.syms
+        vals = val
+    end
+    # Interpolate the values into their corresponding symbol name.
+    for (i,sym) in enumerate(syms)
+        sym[] = permutedims(reshape(collect(Iterators.flatten(vals[i])), length(vals[i]),:))
+    end
     r = Core.eval(callingmodule, expr)  # eval the expression in the calling module
     # Now turn the 3x1 Arrays back into a 3-el Vector
     if length(size(r)) == 2 && size(r)[end] == 1
@@ -118,19 +127,19 @@ end
 #  retrieved and its value inserted into the expr.
 # Note: returns the first match it finds.
 # TODO: would be better to return _all_ matches so you can e.g. add columns
-expr_to_col(table, _) = nothing, nothing
+expr_to_col(table, _) = []
 function expr_to_col(table, expr::Expr)
+    outs = []
     for (i,arg) in enumerate(expr.args)
         if arg isa Union{Symbol,String}
             indices = _match_column_names(table, Symbol(arg))
             if !isempty(indices)
-                return arg, Ref(expr.args, i)
+                push!(outs, (arg, Ref(expr.args, i)))
             end
         end
-        outcol, outref = expr_to_col(table, arg)
-        outcol != nothing && return outcol, outref
+        append!(outs, expr_to_col(table, arg))
     end
-    return nothing, nothing
+    return outs
 end
 
 struct SelectResult
@@ -172,9 +181,8 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing, callingmodu
             wherecolexpr = _retrieve_col_name(t, where)
             val_table = _select_from(t, wherecolexpr.name; callingmodule=callingmodule)
             vals = val_table.cols
-            sym, expr = wherecolexpr.sym, wherecolexpr.expr
             # Get bitarray for whereexpr row-filter.
-            rowfilter = _eval_expr_internal(vals, sym, expr, callingmodule)
+            rowfilter = _eval_expr_internal(vals, wherecolexpr, wherecolexpr.expr, callingmodule)
         end
         if groupby != nothing
             # PARSE GROUP BY EXPRESSION
@@ -198,7 +206,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing, callingmodu
         out_colnames = []
         for colexpr in colexprs
             col = _retrieve_col_name(t, colexpr)
-            val_table = _select_from(t, col.name; callingmodule=callingmodule)
+            val_table = _select_from(t, col; callingmodule=callingmodule)
             # Now filter with where
             if where != nothing
                 filtered_table = Table(val_table.title, val_table.headers,
@@ -212,9 +220,8 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing, callingmodu
                 inner_results, inner_colnames = _select_from__group_by_internal(t, col, filtered_table, colors, counts, num_colors, callingmodule)
             else
                 filtered = filtered_table.cols
-                if isa(col, ColumnExprRef)
-                    sym = col.sym
-                    t = _eval_expr_internal(filtered, sym, colexpr, callingmodule)
+                if isa(col, Union{ColumnExprRef, MultiColumnExprRef})
+                    t = _eval_expr_internal(filtered, col, colexpr, callingmodule)
                     inner_colnames, inner_results = t.headers, t.cols
                 else
                     inner_colnames, inner_results = filtered_table.headers, filtered
@@ -238,8 +245,23 @@ struct ColumnExprRef
     sym
     expr::Expr
 end
+struct MultiColumnExprRef
+    names::Array{Symbol,1}
+    syms::Array
+    expr::Expr
+end
 _retrieve_col_name(t, col::Symbol) = Column(col)
-_retrieve_col_name(t, expr::Expr) = ColumnExprRef(expr_to_col(t, expr)..., expr)
+function _retrieve_col_name(t, expr::Expr)
+     colsyms = expr_to_col(t, expr)
+     if length(colsyms) == 1
+         return ColumnExprRef(colsyms[1]..., expr)
+     end
+     return MultiColumnExprRef(getindex.(colsyms, 1), getindex.(colsyms, 2), expr)
+ end
+
+_select_from(t, col::Column; callingmodule=Main) = _select_from(t, col.name; callingmodule=callingmodule)
+_select_from(t, col::ColumnExprRef; callingmodule=Main) = _select_from(t, col.name; callingmodule=callingmodule)
+_select_from(t, col::MultiColumnExprRef; callingmodule=Main) = _select_from(t, col.names...; callingmodule=callingmodule)
 
 # -- Groupby implementation
 # Rename each unique item to a unique number, and get counts.
@@ -282,13 +304,17 @@ end
 
 _colnames_from_table(t, colexpr::Column) = t.headers
 _colnames_from_table(t, colexpr::ColumnExprRef) = [tostring(colexpr.expr)]
+_colnames_from_table(t, colexpr::MultiColumnExprRef) = [tostring(colexpr.expr)]
 
 function _get_val_from_split(v, colexpr::Column, callingmodule)
     return [v[1]]
 end
 function _get_val_from_split(v, colexpr::ColumnExprRef, callingmodule)
-    sym, expr = colexpr.sym, colexpr.expr
-    out_t = _eval_expr_internal(v, sym, expr, callingmodule)
+    out_t = _eval_expr_internal(v, colexpr, colexpr.expr, callingmodule)
+    return out_t.cols[1]
+end
+function _get_val_from_split(v, colexpr::MultiColumnExprRef, callingmodule)
+    out_t = _eval_expr_internal(v, colexpr, expr, callingmodule)
     return out_t.cols[1]
 end
 
