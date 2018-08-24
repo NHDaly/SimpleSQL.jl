@@ -179,7 +179,7 @@ function select_from(t, colexprs...; where=nothing, groupby=nothing, callingmodu
         if where != nothing
             # PARSE WHERE EXPRESSION
             wherecolexpr = _retrieve_col_name(t, where)
-            val_table = _select_from(t, wherecolexpr.name; callingmodule=callingmodule)
+            val_table = _select_from(t, wherecolexpr; callingmodule=callingmodule)
             vals = val_table.cols
             # Get bitarray for whereexpr row-filter.
             rowfilter = _eval_expr_internal(vals, wherecolexpr, wherecolexpr.expr, callingmodule)
@@ -300,6 +300,9 @@ function _select_from__group_by_internal(t, colexpr, vals_table, colors, counts,
     vals = vals_table.cols
     results = []
     out_colnames = _colnames_from_table(vals_table, colexpr)
+    if (colexpr isa MultiColumnExprRef)
+        vals = (collect(zip(vals...)),)
+    end
     for v in vals
         splits = [Vector{eltype(v)}(undef, c) for c in counts]
         for i in 1:num_colors
@@ -308,6 +311,9 @@ function _select_from__group_by_internal(t, colexpr, vals_table, colors, counts,
 
         row_results = []
         for val in splits
+            if (colexpr isa MultiColumnExprRef)
+                val = [val[1]...]
+            end
             push!(row_results, _get_val_from_split(val, colexpr, callingmodule)...)
         end
         push!(results, row_results)
@@ -327,7 +333,7 @@ function _get_val_from_split(v, colexpr::ColumnExprRef, callingmodule)
     return out_t.cols[1]
 end
 function _get_val_from_split(v, colexpr::MultiColumnExprRef, callingmodule)
-    out_t = _eval_expr_internal(v, colexpr, expr, callingmodule)
+    out_t = _eval_expr_internal(v, colexpr, colexpr.expr, callingmodule)
     return out_t.cols[1]
 end
 
